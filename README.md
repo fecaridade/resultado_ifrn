@@ -1,4 +1,4 @@
-# IFRN 2026 - Consulta por Inscricao (Docling)
+# IFRN - Consulta por Inscricao (Docling)
 
 Sistema simples de terminal para:
 - extrair dados do PDF com `docling`
@@ -14,13 +14,24 @@ pip install -r requirements.txt
 
 ## 2) Extrair dados do PDF
 
+Padrão (arquivo 2026):
+
 ```bash
 python parse_ifrn_docling.py
 ```
 
-Arquivos gerados:
-- `data/ifrn_2026_resultado.csv`
-- `data/ifrn_2026_resultado.jsonl`
+Arquivo específico (ex.: 2025):
+
+```bash
+python parse_ifrn_docling.py \
+  --pdf Resultado_Final_Retificado_-_IFRN_Cursos_Técnicos_de_Nível_Médio_na_Forma_Inte_ssh7Dgc.pdf \
+  --csv-out data/ifrn_2025_resultado.csv \
+  --jsonl-out data/ifrn_2025_resultado.jsonl
+```
+
+Arquivos gerados (conforme parâmetros):
+- `data/*.csv`
+- `data/*.jsonl`
 
 ## 3) Consultar por inscricao
 

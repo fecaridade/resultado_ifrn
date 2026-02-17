@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extrai o resultado do IFRN 2026 a partir do PDF usando docling.
+"""Extrai resultado IFRN (2025/2026) a partir do PDF usando docling.
 
 Este script evita o pipeline padrão do DocumentConverter (que exige modelos remotos)
 e usa o backend local do docling-parse v4 para leitura precisa das células de texto.
@@ -12,6 +12,7 @@ import csv
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -20,12 +21,23 @@ from docling.backend.docling_parse_v4_backend import DoclingParseV4DocumentBacke
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import InputDocument
 
-INSCRICAO_RE = re.compile(r"^\d{7}-\d$")
-CLASSIFICACAO_RE = re.compile(r"^\d+º$")
+INSCRICAO_RE = re.compile(r"^\d{6,8}-\d$")
+CLASSIFICACAO_RE = re.compile(r"^\d+[º°o]$")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 ROW_TOP_PADDING = 6.0
 TABLE_HEADER_CUTOFF_Y = 45.0
+HEADER_Y_MAX = 170.0
+
+SCORE_FIELDS_IN_ORDER = [
+    "escore_final",
+    "escore_final_bonificado",
+    "redacao",
+    "escore_portugues",
+    "escore_matematica",
+    "escore_portugues_bonificado",
+    "escore_matematica_bonificado",
+]
 
 OUTPUT_FIELDS = [
     "inscricao",
@@ -84,13 +96,25 @@ def normalize_spaces(value: str) -> str:
     return " ".join(value.split())
 
 
+def normalize_for_match(value: str) -> str:
+    value = normalize_spaces(value)
+    value = "".join(
+        ch
+        for ch in unicodedata.normalize("NFD", value)
+        if unicodedata.category(ch) != "Mn"
+    )
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return normalize_spaces(value)
+
+
 def sort_cells(cells: Iterable[Cell]) -> list[Cell]:
     return sorted(cells, key=lambda c: (c.y, c.x))
 
 
 def parse_oferta(text: str) -> dict[str, str]:
     text = normalize_spaces(text)
-    match = re.match(r"^n[ºo]\s*(\d+)\s+(.*)$", text, flags=re.IGNORECASE)
+    match = re.match(r"^n(?:[º°o])?\s*(\d+)\s+(.*)$", text, flags=re.IGNORECASE)
     if not match:
         return {}
 
@@ -118,93 +142,159 @@ def parse_oferta(text: str) -> dict[str, str]:
 
 
 def find_first_x(
-    cells: list[Cell], token: str, y_max: float = 170.0, exact: bool = False
+    cells: list[Cell],
+    token: str,
+    y_max: float = HEADER_Y_MAX,
+    exact: bool = False,
+    y_min: float = 0.0,
 ) -> Optional[float]:
-    token_lower = token.lower()
+    token_norm = normalize_for_match(token)
     for cell in sort_cells(cells):
-        if cell.y > y_max:
+        if cell.y < y_min or cell.y > y_max:
             continue
-        text = cell.text.lower()
-        matched = text == token_lower if exact else token_lower in text
+        text_norm = normalize_for_match(cell.text)
+        matched = text_norm == token_norm if exact else token_norm in text_norm
         if matched:
             return cell.x
     return None
 
 
 def find_all_x(
-    cells: list[Cell], token: str, y_max: float = 170.0, exact: bool = False
+    cells: list[Cell],
+    token: str,
+    y_max: float = HEADER_Y_MAX,
+    exact: bool = False,
+    y_min: float = 0.0,
 ) -> list[float]:
-    token_lower = token.lower()
+    token_norm = normalize_for_match(token)
     xs = []
     for c in cells:
-        if c.y > y_max:
+        if c.y < y_min or c.y > y_max:
             continue
-        text = c.text.lower()
-        matched = text == token_lower if exact else token_lower in text
+        text_norm = normalize_for_match(c.text)
+        matched = text_norm == token_norm if exact else token_norm in text_norm
         if matched:
             xs.append(c.x)
     return sorted(xs)
 
 
-def detect_layout(cells: list[Cell], previous: Optional[PageLayout]) -> PageLayout:
-    inscricao_x = find_first_x(cells, "Inscrição", exact=True)
-    nome_x = find_first_x(cells, "Nome", exact=True)
-    classificacao_x = find_first_x(cells, "Classificação", exact=True)
-    situacao_x = find_first_x(cells, "Situação", exact=True)
-    redacao_x = find_first_x(cells, "Redação", exact=True)
-    final_x = find_first_x(cells, "Final", exact=True)
-    portugues_x = find_first_x(cells, "Português", exact=True)
-    matematica_x = find_first_x(cells, "Matemática", exact=True)
-    bonificados = find_all_x(cells, "Bonificado", exact=True)
+def find_first_x_any(
+    cells: list[Cell],
+    tokens: list[str],
+    y_max: float = HEADER_Y_MAX,
+    exact: bool = False,
+    y_min: float = 0.0,
+) -> Optional[float]:
+    for token in tokens:
+        found = find_first_x(
+            cells,
+            token=token,
+            y_max=y_max,
+            exact=exact,
+            y_min=y_min,
+        )
+        if found is not None:
+            return found
+    return None
 
-    split_header_mode = (
-        final_x is not None
-        and portugues_x is not None
-        and matematica_x is not None
-        and len(bonificados) >= 3
-    )
 
-    if split_header_mode:
-        score_anchors = [
-            ("escore_final", final_x),
-            ("escore_final_bonificado", bonificados[0]),
-            ("redacao", redacao_x if redacao_x is not None else 0.0),
-            ("escore_portugues", portugues_x),
-            ("escore_matematica", matematica_x),
-            ("escore_portugues_bonificado", bonificados[1]),
-            ("escore_matematica_bonificado", bonificados[2]),
+def dedupe_sorted_x(xs: list[float], tolerance: float = 3.0) -> list[float]:
+    if not xs:
+        return []
+    result = [xs[0]]
+    for x in xs[1:]:
+        if abs(x - result[-1]) > tolerance:
+            result.append(x)
+    return result
+
+
+def detect_score_anchors_from_rows(
+    cells: list[Cell], situacao_x: Optional[float]
+) -> list[tuple[str, float]]:
+    if situacao_x is None:
+        return []
+    inscricao_cells = sort_cells([c for c in cells if is_inscricao(c.text)])
+    if not inscricao_cells:
+        return []
+    for idx, current in enumerate(inscricao_cells[:3]):
+        next_y = inscricao_cells[idx + 1].y if idx + 1 < len(inscricao_cells) else math.inf
+        row_start = current.y - ROW_TOP_PADDING
+        row_end = next_y - ROW_TOP_PADDING
+        row_score_cells = [
+            c
+            for c in cells
+            if row_start <= c.y < row_end
+            and c.x >= situacao_x + 20.0
+            and is_score_value(c.text)
         ]
+        xs = dedupe_sorted_x(sorted(c.x for c in row_score_cells))
+        if len(xs) >= len(SCORE_FIELDS_IN_ORDER):
+            return list(zip(SCORE_FIELDS_IN_ORDER, xs[: len(SCORE_FIELDS_IN_ORDER)]))
+    return []
+
+
+def detect_layout(cells: list[Cell], previous: Optional[PageLayout]) -> PageLayout:
+    inscricao_x = find_first_x_any(cells, ["inscri"])
+    inscricao_header_y = None
+    for cell in sort_cells(cells):
+        if cell.y > HEADER_Y_MAX:
+            break
+        if "inscri" in normalize_for_match(cell.text):
+            inscricao_header_y = cell.y
+            break
+
+    row_y_min = 0.0
+    row_y_max = HEADER_Y_MAX
+    if inscricao_header_y is not None:
+        row_y_min = max(0.0, inscricao_header_y - 8.0)
+        row_y_max = inscricao_header_y + 12.0
+
+    nome_x = find_first_x_any(cells, ["nome"], exact=True, y_min=row_y_min, y_max=row_y_max)
+    classificacao_x = find_first_x_any(
+        cells, ["class"], y_min=row_y_min, y_max=row_y_max
+    )
+    situacao_x = find_first_x_any(cells, ["situ"], y_min=row_y_min, y_max=row_y_max)
+    redacao_x = find_first_x_any(cells, ["reda"], y_min=row_y_min, y_max=row_y_max)
+
+    score_anchors = detect_score_anchors_from_rows(cells, situacao_x)
+    if score_anchors:
+        final_x = score_anchors[0][1]
+        redacao_x = score_anchors[2][1]
+        portugues_x = score_anchors[3][1]
+        matematica_x = score_anchors[4][1]
+        bonificados = [score_anchors[1][1], score_anchors[5][1], score_anchors[6][1]]
     else:
-        escore_final_x = find_first_x(cells, "Escore Final", exact=True)
-        escore_final_bon_x = find_first_x(cells, "Escore Final Bonificado", exact=True)
-        escore_port_x = find_first_x(cells, "Escore Português", exact=True)
-        escore_mat_x = find_first_x(cells, "Escore Matemática", exact=True)
-        escore_port_bon_x = find_first_x(
-            cells, "Escore Português Bonificado", exact=True
-        )
-        escore_mat_bon_x = find_first_x(
-            cells, "Escore Matemática Bonificado", exact=True
-        )
-        if (
-            escore_final_x is not None
-            and escore_final_bon_x is not None
-            and redacao_x is not None
-            and escore_port_x is not None
-            and escore_mat_x is not None
-            and escore_port_bon_x is not None
-            and escore_mat_bon_x is not None
-        ):
-            score_anchors = [
-                ("escore_final", escore_final_x),
-                ("escore_final_bonificado", escore_final_bon_x),
-                ("redacao", redacao_x),
-                ("escore_portugues", escore_port_x),
-                ("escore_matematica", escore_mat_x),
-                ("escore_portugues_bonificado", escore_port_bon_x),
-                ("escore_matematica_bonificado", escore_mat_bon_x),
+        final_x = find_first_x_any(cells, ["final"])
+        portugues_x = find_first_x_any(cells, ["portug"])
+        matematica_x = find_first_x_any(cells, ["matemat"])
+        bonificados = dedupe_sorted_x(find_all_x(cells, "bon"))
+        if final_x is None and situacao_x is not None:
+            escore_xs = [
+                x
+                for x in dedupe_sorted_x(find_all_x(cells, "escore"))
+                if x > situacao_x + 15.0
             ]
-        else:
-            score_anchors = []
+            if escore_xs:
+                final_x = escore_xs[0]
+
+        split_header_mode = (
+            final_x is not None
+            and portugues_x is not None
+            and matematica_x is not None
+            and len(bonificados) >= 3
+            and redacao_x is not None
+        )
+
+        if split_header_mode:
+            score_anchors = [
+                ("escore_final", final_x),
+                ("escore_final_bonificado", bonificados[0]),
+                ("redacao", redacao_x),
+                ("escore_portugues", portugues_x),
+                ("escore_matematica", matematica_x),
+                ("escore_portugues_bonificado", bonificados[1]),
+                ("escore_matematica_bonificado", bonificados[2]),
+            ]
 
     if (
         inscricao_x is None
@@ -350,8 +440,22 @@ def run(pdf_path: Path, csv_out: Path, jsonl_out: Path, max_pages: Optional[int]
                 continue
             page_cells.append(Cell(text=text, x=box.l, y=box.t))
 
-        oferta_cell = next((c for c in page_cells if c.text.startswith("nº ")), None)
-        lista_cell = next((c for c in page_cells if c.text.startswith("Lista ")), None)
+        oferta_cell = next(
+            (
+                c
+                for c in page_cells
+                if re.match(r"^n(?:o)?\s*\d+\b", normalize_for_match(c.text))
+            ),
+            None,
+        )
+        lista_cell = next(
+            (
+                c
+                for c in page_cells
+                if normalize_for_match(c.text).startswith("lista ")
+            ),
+            None,
+        )
         current_layout = detect_layout(page_cells, current_layout)
 
         page_context = dict(current_context)
