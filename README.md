@@ -47,7 +47,24 @@ Modo interativo:
 python ifrn_cli.py
 ```
 
-## Observacao tecnica
+### 4) Filtrar registros por lista de nomes
+
+```bash
+python ifrn_cli.py --filter_by_name nomes --csv data/resultado.csv
+```
+
+`nomes` é um arquivo com nomes de aprovados. Um nome por linha. Comumente, pode ser uma relação de uma turma.
+Para analises de turmas isso é mais assertivo que filtrar as pessoas aprovadas, pois nem todas
+dessas realmente se matriculam, além de que pessoas que aparecem nesse resultado como "Em espera" podem ter sido chamados depois.
+
+Caso um nome no arquivo de `nomes` não seja encontrado, o processamento é interrompido e você
+deverá fazer a correção. É comum que nomes estejam diferentes por erro de digitação.
+
+Caso um nome apareça mais de uma vez, será exibido a primeira ocorrência. É comum que um mesmo
+candidato apareça em uma de uma lista (Geral, Baixa Renda...). As classificações são diferentes, mas as notas são iguais. Observar se não é um homônimo de outra turma.
+
+
+## Observação técnica
 
 O `DocumentConverter` padrao do docling tenta baixar modelos remotos.
 Este projeto usa o backend local `DoclingParseV4DocumentBackend` para funcionar

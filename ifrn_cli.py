@@ -29,6 +29,18 @@ def load_matches(csv_path: Path, inscricao: str) -> list[dict[str, str]]:
     return matches
 
 
+def filter_by_names(csv_path: Path, nome: str) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as fp:
+        reader = csv.DictReader(fp)
+        for row in reader:
+            if row.get("nome", "").lower() == nome.lower():
+                print(",".join(row.values()))
+                break
+        else:
+            raise SystemExit(f"Nao encontrado: {nome}")
+
+
 def print_result(rows: list[dict[str, str]]) -> None:
     if not rows:
         print("Inscricao nao encontrada.")
@@ -87,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Inscricao para consulta direta.",
     )
+    parser.add_argument(
+        "--filter_by_names",
+        type=str,
+        default=None,
+        help="Arquivo com relação de nomes para filtrar (uma linha por nome, sem cabecalho).",
+    )
     return parser.parse_args()
 
 
@@ -96,5 +114,12 @@ if __name__ == "__main__":
         raise SystemExit(f"CSV nao encontrado: {args.csv}")
     if args.inscricao:
         print_result(load_matches(args.csv, args.inscricao))
+    if args.filter_by_names:
+        with open(args.filter_by_names, "r", encoding="utf-8") as fp:
+            for line in fp:
+                name = line.strip()
+                if not name:
+                    continue
+                filter_by_names(args.csv, name)
     else:
         run_interactive(args.csv)
